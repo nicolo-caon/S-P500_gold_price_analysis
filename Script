@@ -1,0 +1,217 @@
+#Load library
+library(zoo)
+library(ggplot2)
+
+# Load the data file, it contains gold price since 1979 and S&P500 price since 1979. S&P500 is not "total return", so dividends are missing
+Gold_daily <- read.csv("./Gold_daily.csv", header = TRUE)
+SP_daily <- read.csv("./SP_daily_open_data.csv", header = TRUE)
+
+# Convert the date format to dd-mm-yyyy
+Gold_daily$Date <- format(as.Date(Gold_daily$Date, "%d/%m/%Y"), "%Y-%m-%d")
+SP_daily$Date <- format(as.Date(SP_daily$Date, "%m/%d/%Y"), "%Y-%m-%d")
+
+# Merge the datasets by Date, keeping only common dates
+SP_G_data <- merge(Gold_daily, SP_daily, by = "Date")
+  #head(SP_G_data)
+
+# Ensure that columns other than Date are numeric
+SP_G_data$Gold_daily <- as.numeric(SP_G_data$Gold_daily)
+SP_G_data$S_P_500_daily_open <- as.numeric(SP_G_data$S_P_500_daily_open)
+
+# Calculation correlation between gold and s&p 500 prices
+corr <- cor(SP_G_data$Gold_daily, SP_G_data$S_P_500_daily_open)
+print(corr)
+  #it's > 85.94%, which is reasonable since both assets increase in price over time
+
+# Generating 2 days rolling returns data frame to remove trend
+two_days_returns <- data.frame(Date = SP_G_data$Date[1:nrow(SP_G_data)])
+
+# Loop through each column to calculate rolling returns
+for (i in 2:ncol(SP_G_data)) {  
+  two_days_returns_values <- rollapply(
+    SP_G_data[[i]], 
+    width = 2, 
+    FUN = function(x) (x[length(x)] - x[1]) / x[1],  
+    fill = NA, 
+    align = "right"
+  )
+  
+  # Trim to match the number of rows in rolling_returns
+  two_days_returns[[colnames(SP_G_data)[i]]] <- head(two_days_returns_values, n = nrow(two_days_returns))
+}
+
+# Drop rows with NA values (from the first 11 rows that don't have enough data for the rolling window)
+two_days_returns <- na.omit(two_days_returns)
+#head(two_days_returns)
+
+# Ensure the Date column is a proper Date type
+two_days_returns$Date <- as.Date(two_days_returns$Date)
+ 
+# Calculation correlation between gold and s&p 500 2 days rolling returns
+ corr <- cor(two_days_returns$Gold_daily, two_days_returns$S_P_500_daily_open)
+ print(corr)
+ #it's < 5.75%, which is very low, they are almost de-correlated but this is an average over a period of 46 years
+ 
+# Computing the rolling correlation, to see how it evolves over time. If a trading years is ≈ 250 day, i want to see how it evolves over a 6 months rolling period
+ rolling_corr <- rollapply(
+   two_days_returns[, c("Gold_daily", "S_P_500_daily_open")],
+   width = 125,  # Window size for rolling correlation
+   FUN = function(z) cor(z[, 1], z[, 2], use = "complete.obs"),
+   by.column = FALSE,
+   fill = NA
+ )
+ 
+# Plot the rolling correlation
+ plot(two_days_returns$Date, rolling_corr, type = "l", col = "blue",
+      main = "Rolling Correlation (Window = 250 Days)",
+      xlab = "Date", ylab = "Correlation", las = 2)
+ 
+# Plot histogram of the rolling correlation
+ hist(
+   rolling_corr, 
+   breaks = 30,  # Number of bins
+   col = "lightblue", 
+   main = "Distribution of Rolling Correlation (125-Day Window)", 
+   xlab = "Correlation Values", 
+   ylab = "Frequency"
+ )
+
+# Define the custom ranges for correlation
+ ranges <- c(-1, -0.4, -0.2, 0, 0.2, 0.4, 1)
+ 
+# Assign each rolling correlation value to the specified ranges
+ range_groups <- cut(rolling_corr, breaks = ranges, include.lowest = TRUE, right = FALSE,
+                     labels = c("[-1, -0.4)","[-0.4, -0.2)", "[-0.2, 0)", "[0, 0.2)", "[0.2, 0.4)", "[0.4, 1]"))
+ 
+# Create frequency table for the defined ranges
+ frequency_table <- table(range_groups)
+ 
+# Print the frequency table
+ print(frequency_table)
+  #Quite volatile but out of over 10k observations almost 8.6k are between -.2 and .2
+ 
+############################ 
+# Now we generate all possible portfolios of the two assets with 2.25% increments using rolling returns at x years
+############################
+ 
+# Generating rolling returns data frame over desired period, 250 is to be considered 1 year
+ rolling_returns <- data.frame(Date = SP_G_data$Date[1:nrow(SP_G_data)])
+ 
+# Loop through each column to calculate rolling returns
+ for (i in 2:ncol(SP_G_data)) {  
+   rolling_returns_values <- rollapply(
+     SP_G_data[[i]], 
+     width = 750, 
+     FUN = function(x) (x[length(x)] - x[1]) / x[1],  
+     fill = NA, 
+     align = "right"
+   )
+   
+   # Trim to match the number of rows in rolling_returns
+   rolling_returns[[colnames(SP_G_data)[i]]] <- rolling_returns_values
+ }
+ 
+# Drop rows with NA values (from the first 11 rows that don't have enough data for the rolling window)
+ rolling_returns <- na.omit(rolling_returns)
+ #head(rolling_returns)
+ 
+# Ensure the Date column is a proper Date type
+ rolling_returns$Date <- as.Date(rolling_returns$Date)
+ 
+# Initialize an empty list to store portfolio returns
+ portfolios <- list()
+ 
+# Define the weight sequence from 100% to 0% in 2.25% increments
+ weights_gold <- seq(1, 0, by = -0.025)
+ 
+# Loop through weights and calculate portfolio returns
+ for (w in weights_gold) {
+   
+   # Portfolio return: weighted sum of gold and S&P daily returns
+   portfolio_return <- w * rolling_returns$Gold_daily + (1 - w) * rolling_returns$S_P_500_daily_open
+   
+   # Store the portfolio returns in the list with a name
+   portfolios[[paste0("G", w * 100, "_SP", (1 - w) * 100)]] <- portfolio_return
+ }
+ 
+# Convert the list to a data frame for easier analysis
+ portfolio_df <- data.frame(Date = rolling_returns$Date, portfolios)
+ #head(portfolio_df)
+ 
+# Initialize result data frame for portfolio statistics (Expected Value, Standard Deviation, and Probability Below 0%)
+ portfolio_stats <- data.frame(
+   Portfolio = character(),
+   Expected_Value = numeric(),
+   Std_Dev = numeric(),
+   Prob_Below_0Prc = numeric()
+ )
+ 
+# Loop through portfolios to calculate expected values, standard deviation, and probabilities below 0% return
+ for (portfolio_name in names(portfolio_df)[-1]) {
+   
+   # Extract the portfolio returns, removing NAs
+   returns <- na.omit(portfolio_df[[portfolio_name]])
+   
+   # Check if 'returns' is correctly extracted 
+   if(length(returns) == 0) {
+     next 
+   }
+   
+   # Compute expected value and standard deviation 
+   expected_val <- mean(returns)
+   std_dev <- sd(returns)
+   
+   # Calculate the probability of returns below 0%
+   Prob_Below_0Prc <- mean(returns < 0)
+   
+   # Append to portfolio statistics data frame
+   portfolio_stats <- rbind(
+     portfolio_stats,
+     data.frame(
+       Portfolio = portfolio_name, 
+       Expected_Value = expected_val, 
+       Std_Dev = std_dev,
+       Prob_Below_0Prc = Prob_Below_0Prc
+     )
+   )
+ }
+ 
+# Print the portfolio statistics 
+ print(portfolio_stats)
+ 
+# Create the efficient frontier plot
+ eff_frontier_plot <- ggplot(portfolio_stats, aes(x = Std_Dev, y = Expected_Value)) +
+   geom_point(aes(color = Portfolio), size = 3) +
+   geom_line(aes(group = 1), linetype = "dashed") +
+   # Add labels for all portfolios
+   geom_text(
+             aes(label = Portfolio),
+             vjust = -1, hjust = 1,
+             size = 3) +
+   # Customize  appearance
+   theme_minimal() +
+   labs(title = "Efficient Frontier: Gold vs S&P 500",
+        x = "Risk (Standard Deviation)",
+        y = "Expected Return",
+        color = "Portfolio Allocation") +
+   theme(legend.position = "none",
+         plot.title = element_text(hjust = 0.5, face = "bold"),
+         axis.text = element_text(size = 10),
+         axis.title = element_text(size = 12, face = "bold")) +
+   # Format axis labels as percentages
+   scale_y_continuous(labels = scales::percent) +
+   scale_x_continuous(labels = scales::percent) +
+   coord_fixed()  
+ 
+# Display the plot
+ print(eff_frontier_plot)
+ 
+#Calculate the Sharpe Ratio (assuming risk-free rate = 0 for simplicity)
+ portfolio_stats$Sharpe_Ratio <- portfolio_stats$Expected_Value / portfolio_stats$Std_Dev
+ 
+# Find the portfolio with the highest Sharpe Ratio
+ optimal_portfolio <- portfolio_stats[which.max(portfolio_stats$Sharpe_Ratio), ]
+ print("Portfolio with highest Sharpe Ratio:")
+ print(optimal_portfolio)
+ 
+ 
