@@ -88,7 +88,7 @@ two_days_returns$Date <- as.Date(two_days_returns$Date)
  
 # Print the frequency table
  print(frequency_table)
-  #Quite volatile but out of over 10k observations almost 8.6k are between -.2 and .2
+  #Quite volatile but out of over 10k observations almost 8.6k are between -0.2 and 0.2
  
 ############################ 
 # Now we generate all possible portfolios of the two assets with 2.25% increments using rolling returns at x years
